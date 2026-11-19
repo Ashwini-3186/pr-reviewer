@@ -4,6 +4,7 @@ A GitHub bot that automatically reviews pull requests using an LLM and posts fee
 
 ![Buggy code in the pull request](docs/1.png)
 ![AI review comment posted by the bot](docs/2.png)
+![Inline comments on specific lines](docs/3.png)
 
 ## What it does
 When a pull request is opened or updated, the bot:
@@ -19,6 +20,9 @@ Node.js, Express, Octokit (GitHub API), OpenRouter (LLM API)
 - Webhook signature verification so only genuine GitHub requests are accepted
 - Retry with fallback models when the LLM provider is rate-limited
 - Large diffs are truncated before being sent to the model
+- Inline review comments on the exact lines, with severity tags (critical / warning / suggestion)
+- Diff is annotated with line numbers and the LLM returns structured JSON; invalid line references are filtered out so GitHub never rejects the review
+- Falls back to a single summary comment if the LLM output can't be parsed
 
 ## Setup
 ```bash
@@ -42,7 +46,6 @@ ngrok http 3000
 Then add a webhook to your repo (Pull requests event, payload URL `<ngrok-url>/webhook`).
 
 ## Roadmap
-- [ ] Inline comments on specific lines
 - [ ] GitHub App so anyone can install it
 - [ ] Review history and dashboard
 - [ ] Deployment
