@@ -1,10 +1,15 @@
 import "dotenv/config";
 import crypto from "crypto";
 import express from "express";
-import { Octokit } from "octokit";
+import fs from "fs";
+import { App } from "octokit";
 
 const app = express();
-const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
+
+const ghApp = new App({
+  appId: process.env.APP_ID,
+  privateKey: fs.readFileSync(process.env.PRIVATE_KEY_PATH, "utf8"),
+});
 
 app.use(express.json({ verify: (req, _res, buf) => (req.rawBody = buf) }));
 
@@ -144,7 +149,7 @@ const MARKER = "<!-- ai-pr-reviewer -->";
 // Kaunse commits review ho chuke (server restart pe reset hota hai, baad mein MongoDB mein le jayenge)
 const reviewed = new Set();
 
-async function deleteOldInlineComments({ owner, repo, pull_number }) {
+async function deleteOldInlineComments({ octokit, owner, repo, pull_number }) {
   const old = await octokit.paginate(octokit.rest.pulls.listReviewComments, {
     owner,
     repo,
@@ -158,7 +163,7 @@ async function deleteOldInlineComments({ owner, repo, pull_number }) {
   return mine.length;
 }
 
-async function upsertSummary({ owner, repo, issue_number, body }) {
+async function upsertSummary({ octokit, owner, repo, issue_number, body }) {
   const existing = await octokit.paginate(octokit.rest.issues.listComments, {
     owner,
     repo,
@@ -187,6 +192,7 @@ app.post("/webhook", async (req, res) => {
   const repo = repository.name;
   const pull_number = pull_request.number;
   const sha = pull_request.head.sha;
+  const octokit = await ghApp.getInstallationOctokit(req.body.installation.id);
 
   const key = `${repository.full_name}#${pull_number}@${sha}`;
   if (reviewed.has(key)) {
@@ -210,13 +216,14 @@ app.post("/webhook", async (req, res) => {
     const review = parseReview(raw);
 
     // Review mil gaya, ab purane inline comments hata do
-    const removed = await deleteOldInlineComments({ owner, repo, pull_number });
+    const removed = await deleteOldInlineComments({ octokit, owner, repo, pull_number });
     if (removed) console.log(`Removed ${removed} old inline comments`);
 
     // JSON parse nahi hua to sirf summary comment (update hota hai, naya nahi banta)
     if (!review) {
       console.log("Could not parse JSON, posting plain summary");
       await upsertSummary({
+        octokit,
         owner,
         repo,
         issue_number: pull_number,
@@ -250,6 +257,7 @@ app.post("/webhook", async (req, res) => {
     }
 
     await upsertSummary({
+      octokit,
       owner,
       repo,
       issue_number: pull_number,
