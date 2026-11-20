@@ -23,6 +23,9 @@ Node.js, Express, Octokit (GitHub API), OpenRouter (LLM API)
 - Inline review comments on the exact lines, with severity tags (critical / warning / suggestion)
 - Diff is annotated with line numbers and the LLM returns structured JSON; invalid line references are filtered out so GitHub never rejects the review
 - Falls back to a single summary comment if the LLM output can't be parsed
+- Inline review comments on exact lines, tagged by severity
+- Idempotent reviews: the same commit is never reviewed twice, and old bot comments are replaced on each new commit
+- A single summary comment that updates in place instead of spamming the PR
 
 ## Setup
 ```bash

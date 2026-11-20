@@ -136,9 +136,44 @@ function parseReview(raw) {
   }
 }
 
-const ICONS = { critical: "#", warning: "##", suggestion: "###" };
+const ICONS = { critical: "🔴", warning: "🟡", suggestion: "🟢" };
 
-// ---------- Webhook ----------
+// Har bot comment mein yeh hidden marker hoga, taaki hum apne comments pehchan sakein
+const MARKER = "<!-- ai-pr-reviewer -->";
+
+// Kaunse commits review ho chuke (server restart pe reset hota hai, baad mein MongoDB mein le jayenge)
+const reviewed = new Set();
+
+async function deleteOldInlineComments({ owner, repo, pull_number }) {
+  const old = await octokit.paginate(octokit.rest.pulls.listReviewComments, {
+    owner,
+    repo,
+    pull_number,
+    per_page: 100,
+  });
+  const mine = old.filter((c) => c.body.includes(MARKER));
+  for (const c of mine) {
+    await octokit.rest.pulls.deleteReviewComment({ owner, repo, comment_id: c.id });
+  }
+  return mine.length;
+}
+
+async function upsertSummary({ owner, repo, issue_number, body }) {
+  const existing = await octokit.paginate(octokit.rest.issues.listComments, {
+    owner,
+    repo,
+    issue_number,
+    per_page: 100,
+  });
+  const mine = existing.find((c) => c.body.includes(MARKER));
+  const fullBody = `${MARKER}\n${body}`;
+  if (mine) {
+    await octokit.rest.issues.updateComment({ owner, repo, comment_id: mine.id, body: fullBody });
+  } else {
+    await octokit.rest.issues.createComment({ owner, repo, issue_number, body: fullBody });
+  }
+}
+
 app.get("/", (req, res) => res.send("Bot is running!"));
 
 app.post("/webhook", async (req, res) => {
@@ -151,7 +186,16 @@ app.post("/webhook", async (req, res) => {
   const owner = repository.owner.login;
   const repo = repository.name;
   const pull_number = pull_request.number;
-  console.log(`PR #${pull_number} ${action} in ${repository.full_name}`);
+  const sha = pull_request.head.sha;
+
+  const key = `${repository.full_name}#${pull_number}@${sha}`;
+  if (reviewed.has(key)) {
+    console.log("Already reviewed this commit, skipping");
+    return;
+  }
+  reviewed.add(key);
+
+  console.log(`PR #${pull_number} ${action} (${sha.slice(0, 7)}) in ${repository.full_name}`);
 
   try {
     const { data: diff } = await octokit.rest.pulls.get({
@@ -165,53 +209,57 @@ app.post("/webhook", async (req, res) => {
     const raw = await reviewDiff(text);
     const review = parseReview(raw);
 
-    // JSON parse nahi hua to purana tareeka: ek bada comment
+    // Review mil gaya, ab purane inline comments hata do
+    const removed = await deleteOldInlineComments({ owner, repo, pull_number });
+    if (removed) console.log(`Removed ${removed} old inline comments`);
+
+    // JSON parse nahi hua to sirf summary comment (update hota hai, naya nahi banta)
     if (!review) {
-      console.log("Could not parse JSON, posting plain comment");
-      await octokit.rest.issues.createComment({
+      console.log("Could not parse JSON, posting plain summary");
+      await upsertSummary({
         owner,
         repo,
         issue_number: pull_number,
-        body: "** AI Review**\n\n" + raw,
+        body: `**🤖 AI Review** (commit \`${sha.slice(0, 7)}\`)\n\n${raw}`,
       });
       return;
     }
 
-    // Sirf wahi comments rakho jinki file + line diff mein hai
-    const comments = (review.comments || [])
-      .filter((c) => valid[c.file] && valid[c.file].has(Number(c.line)))
-      .map((c) => ({
-        path: c.file,
-        line: Number(c.line),
-        side: "RIGHT",
-        body: `${ICONS[c.severity] || "#"} **${c.severity || "suggestion"}:** ${c.comment}`,
-      }));
+    const comments = (review.comments || []).filter(
+      (c) => valid[c.file] && valid[c.file].has(Number(c.line))
+    );
 
-    console.log(`Posting review with ${comments.length} inline comments`);
-
-    try {
-      await octokit.rest.pulls.createReview({
-        owner,
-        repo,
-        pull_number,
-        event: "COMMENT",
-        body: `** AI Review**\n\n${review.summary || ""}`,
-        comments,
-      });
-    } catch (err) {
-      console.error("Inline review failed, falling back:", err.message);
-      const lines = (review.comments || []).map(
-        (c) => `- ${ICONS[c.severity] || "#"} \`${c.file}:${c.line}\` ${c.comment}`
-      );
-      await octokit.rest.issues.createComment({
-        owner,
-        repo,
-        issue_number: pull_number,
-        body: `** AI Review**\n\n${review.summary || ""}\n\n${lines.join("\n")}`,
-      });
+    let posted = 0;
+    for (const c of comments) {
+      try {
+        await octokit.rest.pulls.createReviewComment({
+          owner,
+          repo,
+          pull_number,
+          commit_id: sha,
+          path: c.file,
+          line: Number(c.line),
+          side: "RIGHT",
+          body: `${MARKER}\n${ICONS[c.severity] || "🟢"} **${c.severity || "suggestion"}:** ${c.comment}`,
+        });
+        posted++;
+        await sleep(300); // GitHub ke rate limit se bachne ke liye
+      } catch (err) {
+        console.error(`Could not post comment on ${c.file}:${c.line} -> ${err.message}`);
+      }
     }
-    console.log("Review posted!");
+
+    await upsertSummary({
+      owner,
+      repo,
+      issue_number: pull_number,
+      body:
+        `**🤖 AI Review** (commit \`${sha.slice(0, 7)}\`)\n\n` +
+        `${review.summary || ""}\n\n_${posted} inline comment(s) on this commit._`,
+    });
+    console.log(`Review posted! (${posted} inline comments)`);
   } catch (err) {
+    reviewed.delete(key); // fail hua to dobara try karne do
     console.error("Review failed:", err.message);
   }
 });
