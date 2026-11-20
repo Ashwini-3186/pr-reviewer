@@ -6,9 +6,14 @@ import { App } from "octokit";
 
 const app = express();
 
+// Local pe file se, server pe env variable se key padho
+const privateKey = process.env.PRIVATE_KEY
+  ? process.env.PRIVATE_KEY.replace(/\\n/g, "\n")
+  : fs.readFileSync(process.env.PRIVATE_KEY_PATH, "utf8");
+
 const ghApp = new App({
   appId: process.env.APP_ID,
-  privateKey: fs.readFileSync(process.env.PRIVATE_KEY_PATH, "utf8"),
+  privateKey,
 });
 
 app.use(express.json({ verify: (req, _res, buf) => (req.rawBody = buf) }));
@@ -272,4 +277,5 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-app.listen(3000, () => console.log("Running on http://localhost:3000"));
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Running on port ${PORT}`));
